@@ -1,0 +1,44 @@
+version: '3.7'
+
+services:
+  mongo:
+    image: "mongo"
+    volumes:
+      - mongodb-data:/mongo/data/db
+      - redis:/redis/data
+  
+  redis:
+    image: "redis"
+
+  server:
+    env_file: .env
+    image: "encouse/poscreditadapter"
+    command: "gunicorn --bind 0.0.0.0:5000 --access-logfile - --error-logfile - --log-level info server:app"
+    depends_on:
+      - mongo
+    ports:
+      - 127.0.0.1:5000:5000
+
+  celery:
+    env_file: .env
+    image: 'encouse/poscreditadapter'
+    command: celery -A tasks:app worker -l info --concurrency=4
+    environment:
+        CELERY_BROKER_URL: 'redis://redis:6379'
+    depends_on:
+      - redis
+      - mongo
+
+  celerybeat:
+    env_file: .env
+    image: 'encouse/poscreditadapter'
+    command: celery -A tasks beat
+    environment:
+        CELERY_BROKER_URL: 'redis://redis:6379'
+    depends_on:
+      - redis
+      - mongo
+
+volumes:
+  mongodb-data: {}
+  redis: {}
