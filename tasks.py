@@ -20,57 +20,62 @@ app = Celery('app', broker=os.getenv(
 logger = logging.getLogger(__name__)
 
 
-@app.task
-def refresh_orders_database():
-    client = get_mongo_client()
-    orders = client.main.orders
-    session = get_poscredit_session()
-    response = get_poscredit_orders(session)
-    soup = BeautifulSoup(response.text, 'html.parser')
-    data = parse_order_table(soup)
-    for item in data:
-        item.update({'processed_at': None})
-    last_item = orders.find_one(sort=[('_id', pymongo.ASCENDING)])
-    logger.info(f"Insert last item id {dumps(last_item)}")
-    insert = []
-    for item in data:
-        if last_item:
-            if item['id'] == last_item['id']:
-                break
-        insert.append(item)
-        celery.execute.send_task("tasks.send_gc_request_for_order", args=[item], kwargs={})
-    if insert:
-        orders.insert_many(insert)
-    client.close()
-
-
 @app.task(bind=True, retry_kwargs={'max_retries': 5})
 def send_gc_request_for_order(self, order):
-    session = get_poscredit_session()
-    response = get_order_details(session, order['id'])
-    soup = BeautifulSoup(response.text, "html.parser")
-    order_detail = parse_order_details(soup)
     mclient = get_mongo_client()
-    clients = mclient.main.clients
-    phone = order_detail['phone'].replace(
-        ' ', '').replace('-', '').replace('+', '')
-    logger.info(f'Got result phone {phone}')
-    client = clients.find_one({'phone': phone})
+    mclient.main.orders.update_one(
+        {'id': order['id']}, {'$set': {'in_process': True}})
     try:
-        if client:
-            logger.info(f"Found client, processing order")
-            email = client['email']
-            if order_detail['items']:
-                logger.info('Sending getcourse request')
-                send_getcourse_request(order_detail['items'][0]['id'], email)
-        orders.update_one({'id': order['id']}, {
-            '$set': {'processed_at': datetime.datetime.now()}})
-    except (RemoteDisconnected, ProtocolError, ConnectionError) as e:
-        raise self.retry(countdown=10)
+        session = get_poscredit_bank_session()
+        questionnaire = get_bank_questionnaire(
+            session, order['id'], order['hash'])
+        soup = BeautifulSoup(questionnaire.text, "html.parser")
+        data = parse_bank_questionnaire_data(soup)
+        send_getcourse_request(data['model'], data['email'])
+        mclient.main.orders.update_one(
+            {'id': order['id']}, {'$set': {'processed_at': datetime.now()}})
+    except:
+        raise
     finally:
-        mclient.close() 
+        mclient.main.orders.update_one(
+            {'id': order['id']}, {'$set': {'in_process': False}})
+
+
+@app.task
+def refresh_orders_database():
+    session = get_poscredit_bank_session()
+    data = get_bank_orders_table(session)
+    if data:
+        data = data['response']
+        for item in data:
+            item.update({'processed_at': None, 'in_process': False})
+        client = get_mongo_client()
+        orders = client.main.orders
+        last_item = orders.find().sort({'_id': -1}).limit(1)
+        if not last_item:
+            orders.insert_many(data)
+        else:
+            last_item_id = dumps(last_item)['id']
+            logger.info(f"Insert last item id {last_item_id}")
+            insert = []
+            for item in data:
+                if item['id'] == last_item_id:
+                    break
+                insert.append(item)
+            orders.insert_many(insert)
+        client.close()
+
+
+@app.task
+def process_orders():
+    client = get_mongo_client()
+    orders = client.main.orders.find(
+        {'processed_at': None, 'in_process': False})
+    for order in dumps(orders):
+        send_gc_request_for_order.delay(order)
 
 
 @app.on_after_configure.connect
 def setup_periodic_tasks(sender, **kwargs):
     sender.add_periodic_task(crontab(minute='*'), refresh_orders_database.s())
+    sender.add_periodic_task(crontab(minute='*'), process_orders.s())

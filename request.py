@@ -2,9 +2,12 @@ import datetime
 import requests
 import os
 import logging
+import json
 from database import clients, orders
 from http.client import RemoteDisconnected
 from urllib3.exceptions import ProtocolError
+
+from exceptions import RetryError
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +17,13 @@ GETCOURSE_ADAPTER_ADRESS = os.environ.get(
 CREDIT_ACCEPTED_STATUS = os.environ.get(
     'CREDIT_ACCEPTED_STATUS', 'Кредит предоставлен')
 BASE_URL = os.environ.get('POS_BASE_URL', None)
+
+BANK_PASSWORD = os.environ.get('BANK_PASSWORD')
+BANK_LOGIN = os.environ.get('BANK_LOGIN')
+BANK_COMPANY_ID = os.environ.get('BANK_COMPANY_ID', '22862')
+BANK_ACCESS_TRADE = os.environ.get('BANK_ACCESS_TRADE', '156678')
+BANK_SUCCESS_STATUSID = os.environ.get('BANK_SUCCESS_STATUSID', 1)
+
 
 assert BASE_URL, "Please, specify POS_BASE_URL env variable"
 
@@ -27,6 +37,41 @@ def get_poscredit_session():
 
     session.get(f'{BASE_URL}/list/')
     return session
+
+
+def get_poscredit_bank_session(retries=5):
+    session = requests.Session()
+    counter = retries
+    while not session.cookies.get('PHPSESSID'):
+        if counter <= 0:
+            raise RetryError('Retries exceeded getting bank session')
+        counter -= 1
+        session.post(
+            'https://bank.b2pos.ru/',
+            files={'login': (None, BANK_LOGIN),
+                   'password': (None, BANK_PASSWORD),
+                   'enter': (None, 'Отправить')})
+
+        session.post(
+            'https://bank.b2pos.ru/',
+            files={'access_company': (None, BANK_COMPANY_ID),
+                   'access_trade': (None, BANK_ACCESS_TRADE),
+                   'access_point_success': (None, 'Отправить')})
+    return session
+
+
+def get_bank_orders_table(session):
+    response = session.post('https://bank.b2pos.ru/services/search_profiles.php', files={
+        'time_end': (None, datetime.datetime.now().strftime('%d.%m.%Y')),
+        'time_start': (None, (datetime.datetime.now() - datetime.timedelta(days=14)).strftime('%d.%m.%Y')),
+        'statusId': (None, BANK_SUCCESS_STATUSID),
+    })
+    return json.loads(response.text)
+
+
+def get_bank_questionnaire(session, id, hash):
+    response = session.get(f"https://bank.b2pos.ru/view/{id}_{hash}/")
+    return response
 
 
 def get_poscredit_orders(session, status=CREDIT_ACCEPTED_STATUS, **kwargs):
