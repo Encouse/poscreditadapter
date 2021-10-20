@@ -29,6 +29,10 @@ assert BASE_URL, "Please, specify POS_BASE_URL env variable"
 
 GC_ID_MAP = ((0, 'course_listener'),
              (1, 'course_manager'), (2, 'course_platinum'))
+GC_NAME_MAP = (('Курс СЛУШАТЕЛЬ', 'course_listener'), ('Курс МЕНЕДЖЕР',
+               'course_manager'), ('Курс PLATINUM', 'course_platinum'))
+GC_NAME_MAP_DICT = dict(((name.lower().replace(' ', ''), course)
+                        for name, course in GC_NAME_MAP))
 GC_ID_MAP_DICT = dict(GC_ID_MAP)
 
 
@@ -91,8 +95,14 @@ def get_order_details(session, id):
 
 
 def send_getcourse_request(course_id, email):
+    offer = None
+    try:
+        offer = GC_ID_MAP_DICT[int(course_id)]
+    except (KeyError, ValueError):
+        offer = GC_NAME_MAP_DICT[course_id.lower().replace(' ', '')]
     data = {
-        'offer': GC_ID_MAP_DICT[int(course_id)],
+        'offer': offer,
         'email': email
     }
-    requests.post(GETCOURSE_ADAPTER_ADRESS, data)
+    requests.post(GETCOURSE_ADAPTER_ADRESS, data=json.dumps(data), headers={
+                  'Content-type': 'application/json'})

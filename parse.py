@@ -43,5 +43,5 @@ def parse_order_details(soup):
 
 def parse_bank_questionnaire_data(soup):
     email = soup.find(attrs={'name': 'EMail'}).attrs['value']
-    model = soup.find(id='good_model_id').attrs['value']
+    model = soup.find(id='good_brand_id').attrs['value']
     return {'email': email, 'model': model}

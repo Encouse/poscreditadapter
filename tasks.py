@@ -7,7 +7,7 @@ import pymongo
 from request import *
 from parse import *
 from database import get_mongo_client
-from bson.json_util import dumps
+from bson.json_util import dumps, loads
 from datetime import datetime
 from requests import ConnectionError
 import json
@@ -20,25 +20,26 @@ app = Celery('app', broker=os.getenv(
 logger = logging.getLogger(__name__)
 
 
-@app.task(bind=True, retry_kwargs={'max_retries': 5})
-def send_gc_request_for_order(self, order):
+@app.task
+def send_gc_request_for_order(id, hash):
+    logging.info(f"Processing order {id}")
     mclient = get_mongo_client()
     mclient.main.orders.update_one(
-        {'id': order['id']}, {'$set': {'in_process': True}})
+        {'id': id}, {'$set': {'in_process': True}})
     try:
         session = get_poscredit_bank_session()
         questionnaire = get_bank_questionnaire(
-            session, order['id'], order['hash'])
+            session, id, hash)
         soup = BeautifulSoup(questionnaire.text, "html.parser")
         data = parse_bank_questionnaire_data(soup)
         send_getcourse_request(data['model'], data['email'])
         mclient.main.orders.update_one(
-            {'id': order['id']}, {'$set': {'processed_at': datetime.now()}})
+            {'id': id}, {'$set': {'processed_at': datetime.now(), 'items': [data]}})
     except:
         raise
     finally:
         mclient.main.orders.update_one(
-            {'id': order['id']}, {'$set': {'in_process': False}})
+            {'id': id}, {'$set': {'in_process': False}})
 
 
 @app.task
@@ -50,19 +51,13 @@ def refresh_orders_database():
         for item in data:
             item.update({'processed_at': None, 'in_process': False})
         client = get_mongo_client()
-        orders = client.main.orders
-        last_item = orders.find().sort({'_id': -1}).limit(1)
-        if not last_item:
-            orders.insert_many(data)
-        else:
-            last_item_id = dumps(last_item)['id']
-            logger.info(f"Insert last item id {last_item_id}")
-            insert = []
-            for item in data:
-                if item['id'] == last_item_id:
-                    break
-                insert.append(item)
-            orders.insert_many(insert)
+        orders = client.main.orders.find().sort(
+            '_id', pymongo.ASCENDING).limit(200)
+        ids = [order['id'] for order in orders]
+        insert = [item for item in data if item['id'] not in ids]
+        logger.info(f'Items for insert {insert}')
+        if insert:
+            client.main.orders.insert_many(insert)
         client.close()
 
 
@@ -71,8 +66,10 @@ def process_orders():
     client = get_mongo_client()
     orders = client.main.orders.find(
         {'processed_at': None, 'in_process': False})
-    for order in dumps(orders):
-        send_gc_request_for_order.delay(order)
+    json_orders = list(orders)
+    for order in json_orders:
+        send_gc_request_for_order.delay(
+            order['id'], order['hash'])
 
 
 @app.on_after_configure.connect
