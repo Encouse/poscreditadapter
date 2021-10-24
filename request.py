@@ -64,11 +64,11 @@ def get_poscredit_bank_session(retries=5):
     return session
 
 
-def get_bank_orders_table(session):
+def get_bank_orders_table(session, status_id=BANK_SUCCESS_STATUSID):
     response = session.post('https://bank.b2pos.ru/services/search_profiles.php', files={
         'time_end': (None, datetime.datetime.now().strftime('%d.%m.%Y')),
-        'time_start': (None, (datetime.datetime.now() - datetime.timedelta(days=14)).strftime('%d.%m.%Y')),
-        'statusId': (None, BANK_SUCCESS_STATUSID),
+        'time_start': (None, (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%d.%m.%Y')),
+        'statusId': (None, status_id),
     })
     return json.loads(response.text)
 

@@ -9,4 +9,5 @@ client = get_mongo_client()
 db = client.main
 orders = db.orders
 clients = db.clients
+warnings = db.warnings
 
